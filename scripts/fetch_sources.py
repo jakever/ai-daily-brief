@@ -59,6 +59,10 @@ def fetch_one(src: dict, settings: dict) -> tuple[str, list[Item], str | None]:
         items = parser(src, sess)
         items = filter_recent(items, settings.get("window_hours", 24))
         cap = settings.get("max_per_source", 15)
+        # HTML sources rarely carry timestamps; listing pages are newest-first,
+        # so a tight cap avoids surfacing months-old articles.
+        if src.get("type") == "html" and all(not it.published_at for it in items):
+            cap = min(cap, 5)
         items = items[:cap]
         return name, items, None
     except Exception as e:
