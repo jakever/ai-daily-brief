@@ -1,0 +1,66 @@
+name: AI Daily Brief
+
+on:
+  schedule:
+    - cron: '0 1 * * *'        # 09:00 Asia/Shanghai (01:00 UTC)
+  workflow_dispatch:
+    inputs:
+      skip_send:
+        description: "Skip Lark send (debug)"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  daily:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Fetch sources
+        run: python scripts/fetch_sources.py
+
+      - name: Analyze with Claude
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: python scripts/analyze.py
+
+      - name: Send to Lark
+        if: ${{ inputs.skip_send != true }}
+        env:
+          LARK_WEBHOOK_URL: ${{ secrets.LARK_WEBHOOK_URL }}
+        run: python scripts/send_lark.py
+
+      - name: Upload run artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: outputs-${{ github.run_id }}
+          path: |
+            raw.json
+            digest.json
+          retention-days: 7
+          if-no-files-found: warn
+
+      - name: Notify on failure
+        if: failure()
+        env:
+          LARK_WEBHOOK_URL: ${{ secrets.LARK_WEBHOOK_URL }}
+        run: |
+          curl -sS -X POST "$LARK_WEBHOOK_URL" \
+            -H 'Content-Type: application/json' \
+            -d "$(cat <<'EOF'
+          {"msg_type":"text","content":{"text":"❌ AI 日报跑失败，查看 GitHub Actions 日志"}}
+          EOF
+          )"
