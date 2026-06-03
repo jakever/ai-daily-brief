@@ -18,24 +18,31 @@ import yaml
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from lib.http import make_session
-from lib.parsers import Item, parse_rss, parse_html, parse_hn_algolia
+from lib.parsers import (
+    Item, parse_rss, parse_html, parse_hn_algolia, parse_changelog_md, parse_ai_bot_daily,
+)
 
 
 PARSERS = {
     "rss": parse_rss,
     "html": parse_html,
     "hn_algolia": parse_hn_algolia,
+    "changelog_md": parse_changelog_md,
+    "ai_bot_daily": parse_ai_bot_daily,
 }
 
 
-def filter_recent(items: list[Item], hours: int) -> list[Item]:
-    """Keep items within last `hours`. Items with no timestamp pass through
-    (most listing pages are time-ordered; we already cap with max_per_source)."""
+def filter_recent(items: list[Item], hours: int, assume_fresh: bool = False) -> list[Item]:
+    """Keep items within last `hours`. Items with no timestamp are dropped unless
+    `assume_fresh` is set — that flag is for sources that are inherently current
+    (e.g. GitHub Trending "today") but carry no per-item date. This is what keeps
+    months-old articles from undated listing pages out of the brief."""
     cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
     out: list[Item] = []
     for it in items:
         if not it.published_at:
-            out.append(it)
+            if assume_fresh:
+                out.append(it)
             continue
         try:
             dt = datetime.fromisoformat(it.published_at)
@@ -44,7 +51,9 @@ def filter_recent(items: list[Item], hours: int) -> list[Item]:
             if dt >= cutoff:
                 out.append(it)
         except Exception:
-            out.append(it)
+            # Unparseable date: treat like undated.
+            if assume_fresh:
+                out.append(it)
     return out
 
 
@@ -57,12 +66,12 @@ def fetch_one(src: dict, settings: dict) -> tuple[str, list[Item], str | None]:
     sess = make_session(user_agent=settings.get("user_agent"))
     try:
         items = parser(src, sess)
-        items = filter_recent(items, settings.get("window_hours", 24))
+        items = filter_recent(
+            items,
+            settings.get("window_hours", 24),
+            assume_fresh=bool(src.get("assume_fresh")),
+        )
         cap = settings.get("max_per_source", 15)
-        # HTML sources rarely carry timestamps; listing pages are newest-first,
-        # so a tight cap avoids surfacing months-old articles.
-        if src.get("type") == "html" and all(not it.published_at for it in items):
-            cap = min(cap, 5)
         items = items[:cap]
         return name, items, None
     except Exception as e:

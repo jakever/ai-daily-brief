@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, asdict
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from urllib.parse import urljoin
 
 import feedparser
@@ -52,6 +52,21 @@ def _strip_html(s: str) -> str:
         return ""
     text = re.sub(r"<[^>]+>", " ", s)
     return re.sub(r"\s+", " ", text).strip()
+
+
+# Matches dates embedded in listing text, e.g. "May 28, 2026" / "Jun 2, 2026".
+_DATE_IN_TEXT = re.compile(
+    r"\b(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\.?\s+\d{1,2},\s+\d{4}\b"
+)
+
+
+def _date_from_text(text: str) -> str:
+    """Best-effort: pull a publish date out of listing text when there's no
+    dedicated time element (e.g. Anthropic news cards embed 'May 28, 2026')."""
+    if not text:
+        return ""
+    m = _DATE_IN_TEXT.search(text)
+    return _to_iso(m.group(0)) if m else ""
 
 
 # --- RSS ---
@@ -143,6 +158,9 @@ def parse_html(src: dict, sess) -> list[Item]:
 
         summary = _extract(node, sel.get("summary", ""))[:400]
         published = _to_iso(_extract(node, sel.get("time", "")))
+        if not published:
+            # Fallback: many listing pages embed the date in the card text.
+            published = _date_from_text(node.get_text(" ", strip=True))
 
         out.append(Item(
             source=src["name"],
@@ -150,6 +168,93 @@ def parse_html(src: dict, sess) -> list[Item]:
             url=link,
             summary=summary,
             published_at=published,
+            section_hint=src.get("section_hint", ""),
+        ))
+    return out
+
+
+# --- Markdown changelog (e.g. Claude Code CHANGELOG.md) ---
+
+def parse_changelog_md(src: dict, sess) -> list[Item]:
+    """Parse a `## version` + bullet-list markdown changelog. Emits the latest
+    N version blocks as items. No per-version dates → pair with assume_fresh."""
+    resp = get(sess, src["url"], timeout=20)
+    text = resp.text
+    max_versions = int(src.get("max_versions", 2))
+    link = src.get("link_url", src["url"])
+    # Split into (version, body) blocks on level-2 headings.
+    blocks = re.split(r"^##\s+(.+?)\s*$", text, flags=re.MULTILINE)
+    # blocks = [pre, ver1, body1, ver2, body2, ...]
+    out: list[Item] = []
+    for i in range(1, len(blocks) - 1, 2):
+        version = blocks[i].strip()
+        body = blocks[i + 1]
+        bullets = [b.strip("-* ").strip() for b in body.splitlines() if b.strip().startswith(("-", "*"))]
+        if not bullets:
+            continue
+        summary = "；".join(bullets[:4])
+        out.append(Item(
+            source=src["name"],
+            title=f"{src['name']} {version}",
+            url=link,
+            summary=_strip_html(summary)[:400],
+            published_at="",
+            section_hint=src.get("section_hint", ""),
+        ))
+        if len(out) >= max_versions:
+            break
+    return out
+
+
+# --- ai-bot.cn 每日 AI 快讯 ---
+
+def parse_ai_bot_daily(src: dict, sess) -> list[Item]:
+    """ai-bot.cn/daily-ai-news 列表页顶部即为当日逐条快讯：`.content` 内 `div.news-date`
+    («6月3·周三») 标记日期，其后跟随多个 `div.news-item`（h2 标题 + p 描述 + a.external
+    外链）。抓「今日(Asia/Shanghai)」日期段下的条目；当天段不存在则退回最新一天。"""
+    now = datetime.now(timezone.utc).astimezone(timezone(timedelta(hours=8)))
+    resp = get(sess, src["url"], timeout=20)
+    resp.encoding = "utf-8"
+    soup = BeautifulSoup(resp.text, "html.parser")
+    content = soup.select_one(".content") or soup
+
+    # `.news-date` and `.news-item` in document order; slice items between the
+    # target date and the next date marker.
+    blocks = content.select(".news-date, .news-item")
+    today_label = f"{now.month}月{now.day}·"          # e.g. "6月3·" — trailing dot avoids 6月3↔6月30 clash
+    start = None
+    for i, b in enumerate(blocks):
+        cls = b.get("class") or []
+        if "news-date" in cls and b.get_text(strip=True).startswith(today_label):
+            start = i
+            break
+    if start is None:
+        # No section for today yet — fall back to the first (latest) date block.
+        start = next((i for i, b in enumerate(blocks) if "news-date" in (b.get("class") or [])), None)
+        if start is None:
+            return []
+
+    out: list[Item] = []
+    for b in blocks[start + 1:]:
+        cls = b.get("class") or []
+        if "news-date" in cls:
+            break       # reached the next day
+        if "news-item" not in cls:
+            continue
+        h = b.select_one("h2, h3, .news-title")
+        title = h.get_text(strip=True) if h else ""
+        p = b.select_one("p")
+        summary = p.get_text(" ", strip=True) if p else ""
+        a = b.select_one("a.external[href], a[href^='http']")
+        url = a.get("href") if a else src["url"]
+        if not title:
+            continue
+        out.append(Item(
+            source=src["name"],
+            title=title[:120],
+            url=url,
+            summary=summary[:300],
+            published_at=now.isoformat(),
             section_hint=src.get("section_hint", ""),
         ))
     return out

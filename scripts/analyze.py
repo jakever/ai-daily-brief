@@ -13,32 +13,63 @@ import anthropic
 
 
 MODEL = "claude-sonnet-4-6"
+SECTIONS = ["frontier", "breaking", "oversea", "cn", "trending"]
+FIELD_SEP = "|||"
 
 
 def _today_cst_date() -> str:
     return datetime.now(timezone.utc).astimezone(timezone(timedelta(hours=8))).strftime("%Y-%m-%d")
 
 
-def _extract_json(text: str) -> dict:
-    """Pull JSON object out of model response. Handles plain JSON or fenced blocks."""
+def _parse_digest(text: str) -> dict:
+    """Parse the delimited plain-text digest format the model emits.
+
+    Line-based, no JSON — sidesteps the relay's unreliable nested-object/quote
+    escaping. Format:
+        DATE: YYYY-MM-DD
+        [section]
+        title ||| summary ||| url ||| source
+    """
     text = text.strip()
-    fence = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.DOTALL)
-    if fence:
-        return json.loads(fence.group(1))
-    start = text.find("{")
-    end = text.rfind("}")
-    if start != -1 and end != -1:
-        return json.loads(text[start:end + 1])
-    raise ValueError("No JSON object found in response")
+    # Tolerate accidental ``` fences around the block.
+    text = re.sub(r"^```[a-z]*\n?|```$", "", text.strip()).strip()
+
+    date = ""
+    sections: dict[str, list] = {s: [] for s in SECTIONS}
+    current: str | None = None
+
+    for line in text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        if line.upper().startswith("DATE:"):
+            date = line.split(":", 1)[1].strip()
+            continue
+        m = re.match(r"^\[(\w+)\]$", line)
+        if m:
+            current = m.group(1).lower()
+            continue
+        if current in sections and FIELD_SEP in line:
+            parts = [p.strip() for p in line.split(FIELD_SEP)]
+            # Pad/truncate to exactly 4 fields.
+            parts = (parts + ["", "", "", ""])[:4]
+            title, summary, url, source = parts
+            if title:
+                sections[current].append(
+                    {"title": title, "summary": summary, "url": url, "source": source}
+                )
+    if not any(sections.values()):
+        raise ValueError("No items parsed from model response")
+    return {"date": date or _today_cst_date(), "sections": sections}
 
 
 def _fallback_digest(raw: dict, reason: str) -> dict:
     """If LLM call fails, ship a degraded digest with raw titles grouped by section_hint."""
-    buckets: dict[str, list] = {"breaking": [], "oversea": [], "cn": [], "hot": []}
+    buckets: dict[str, list] = {s: [] for s in SECTIONS}
     for it in raw.get("items", [])[:20]:
-        hint = it.get("section_hint") or "hot"
+        hint = it.get("section_hint") or "cn"
         if hint not in buckets:
-            hint = "hot"
+            hint = "cn"
         buckets[hint].append({
             "title": it.get("title", ""),
             "summary": (it.get("summary", "") or "")[:120],
@@ -65,7 +96,7 @@ def main() -> int:
     items = raw.get("items", [])
     if not items:
         print("[analyze] no items, writing empty digest", file=sys.stderr)
-        digest = {"date": _today_cst_date(), "sections": {"breaking": [], "oversea": [], "cn": [], "hot": []}}
+        digest = {"date": _today_cst_date(), "sections": {s: [] for s in SECTIONS}}
         digest["meta"] = {
             "ok_sources": raw.get("ok_sources", 0),
             "total_sources": raw.get("total_sources", 0),
@@ -111,7 +142,7 @@ def main() -> int:
         try:
             resp = client.messages.create(
                 model=MODEL,
-                max_tokens=4096,
+                max_tokens=12000,
                 system=[{
                     "type": "text",
                     "text": system_prompt,
@@ -119,8 +150,8 @@ def main() -> int:
                 }],
                 messages=[{"role": "user", "content": user_content}],
             )
-            text = "".join(block.text for block in resp.content if getattr(block, "type", "") == "text")
-            digest = _extract_json(text)
+            text = "".join(b.text for b in resp.content if getattr(b, "type", "") == "text")
+            digest = _parse_digest(text)
             break
         except Exception as e:
             last_err = e
@@ -131,7 +162,7 @@ def main() -> int:
         digest = _fallback_digest(raw, str(last_err))
 
     digest.setdefault("date", _today_cst_date())
-    digest.setdefault("sections", {"breaking": [], "oversea": [], "cn": [], "hot": []})
+    digest.setdefault("sections", {s: [] for s in SECTIONS})
     digest["meta"] = {
         "ok_sources": raw.get("ok_sources", 0),
         "total_sources": raw.get("total_sources", 0),

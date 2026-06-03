@@ -6,58 +6,32 @@ settings:
   user_agent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"
 
 sources:
+  # === 每日 AI 快讯精选（归入今日重磅）===
+  - name: AI快讯
+    type: ai_bot_daily
+    url: https://ai-bot.cn/daily-ai-news/
+    base_url: https://ai-bot.cn
+    section_hint: breaking
+    assume_fresh: true
+
   # === 中文技术媒体 ===
   - name: 量子位
     type: rss
     url: https://www.qbitai.com/feed
     section_hint: cn
 
-  - name: 机器之心
-    type: html
-    url: https://www.jiqizhixin.com/
-    selector:
-      item: "article.article-item, .article-item"
-      title: "h3 a, .article-title a"
-      link: "h3 a@href, .article-title a@href"
-      summary: ".article-summary, .summary"
-      time: "time@datetime"
-    section_hint: cn
-
   # === 中文综合科技媒体 ===
-  - name: 36氪 AI
-    type: html
-    url: https://36kr.com/information/AI/
-    selector:
-      item: ".information-flow-item, article"
-      title: "a.article-item-title, h3 a"
-      link: "a.article-item-title@href, h3 a@href"
-      summary: ".article-item-description, .summary"
-      time: ""
-    section_hint: cn
-
-  - name: 虎嗅 AI
-    type: html
-    url: https://www.huxiu.com/channel/107.html
-    selector:
-      item: ".mod-art-list .mod-b, article, .article-item"
-      title: "h2 a, h3 a, .title a"
-      link: "h2 a@href, h3 a@href, .title a@href"
-      summary: ".mob-sub, .summary, p"
-      time: ""
+  - name: 36氪
+    type: rss
+    url: https://36kr.com/feed      # 综合源，非 AI 条目由 analyze 阶段过滤
     section_hint: cn
 
   - name: 钛媒体 AI
-    type: html
-    url: https://www.tmtpost.com/nictation
-    selector:
-      item: ".list-item, article"
-      title: "h3 a, .title a"
-      link: "h3 a@href, .title a@href"
-      summary: ".desc, .summary, p"
-      time: ""
+    type: rss
+    url: https://www.tmtpost.com/feed
     section_hint: cn
 
-  # === 海外实验室 ===
+  # === Anthropic / Claude（重点关注，独立版块）===
   - name: Anthropic News
     type: html
     url: https://www.anthropic.com/news
@@ -68,43 +42,33 @@ sources:
       summary: ""
       time: ""
     base_url: https://www.anthropic.com
-    section_hint: oversea
+    section_hint: frontier
 
-  - name: Google DeepMind
+  - name: Anthropic Engineering
     type: html
-    url: https://deepmind.google/discover/blog/
+    url: https://www.anthropic.com/engineering
     selector:
-      item: "a[href*='/discover/blog/']"
-      title: "h3, h2, .blog-card__title"
-      link: "@href"
-      summary: ".blog-card__description, p"
-      time: ""
-    base_url: https://deepmind.google
-    section_hint: oversea
-
-  - name: Meta AI Blog
-    type: html
-    url: https://ai.meta.com/blog/
-    selector:
-      item: "a[href*='/blog/']"
+      item: "a[href^='/engineering/']"
       title: "h3, h2"
       link: "@href"
       summary: ""
       time: ""
-    base_url: https://ai.meta.com
-    section_hint: oversea
+    base_url: https://www.anthropic.com
+    section_hint: frontier
 
+  - name: Claude Code Changelog
+    type: changelog_md
+    url: https://raw.githubusercontent.com/anthropics/claude-code/main/CHANGELOG.md
+    link_url: https://code.claude.com/docs/en/changelog
+    max_versions: 2
+    section_hint: frontier
+    assume_fresh: true        # changelog has no per-version date; always surface latest
+
+  # === 海外实验室 ===
   - name: OpenAI News
-    type: html
-    url: https://openai.com/news/
-    selector:
-      item: "a[href^='/index/']"
-      title: "h3, h2"
-      link: "@href"
-      summary: ""
-      time: ""
-    base_url: https://openai.com
-    section_hint: oversea
+    type: rss
+    url: https://openai.com/news/rss.xml
+    section_hint: frontier
 
   - name: Hugging Face Blog
     type: rss
@@ -112,34 +76,10 @@ sources:
     section_hint: oversea
 
   # === 方向深耕 ===
-  - name: Cursor Changelog
-    type: html
-    url: https://www.cursor.com/changelog
-    selector:
-      item: "article, .changelog-item"
-      title: "h2, h3"
-      link: "a@href"
-      summary: "p"
-      time: "time@datetime"
-    base_url: https://www.cursor.com
-    section_hint: tool
-
-  - name: Claude Code Changelog
-    type: html
-    url: https://code.claude.com/docs/en/changelog
-    selector:
-      item: "h2, h3"
-      title: ""
-      link: ""
-      summary: ""
-      time: ""
-    base_url: https://code.claude.com
-    section_hint: tool
-
   - name: GitHub Blog AI
     type: rss
     url: https://github.blog/category/ai-and-ml/feed/
-    section_hint: tool
+    section_hint: frontier
 
   # === 社区热度 ===
   - name: GitHub Trending Daily
@@ -152,9 +92,5 @@ sources:
       summary: "p"
       time: ""
     base_url: https://github.com
-    section_hint: hot
-
-  - name: HackerNews AI
-    type: hn_algolia
-    url: https://hn.algolia.com/api/v1/search?tags=front_page&query=AI&hitsPerPage=30
-    section_hint: hot
+    section_hint: trending
+    assume_fresh: true        # trending=today; no per-repo date, but inherently current
