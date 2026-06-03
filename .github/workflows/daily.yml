@@ -2,7 +2,9 @@ name: AI Daily Brief
 
 on:
   schedule:
-    - cron: '0 1 * * *'        # 09:00 Asia/Shanghai (01:00 UTC)
+    # 22:37 UTC ≈ 06:37 Asia/Shanghai 次日。GitHub cron 是 best-effort，整点最拥堵，
+    # 故用非整点分钟并提前发车：即便被延迟 1-3h，仍能落在早晨送达。
+    - cron: '37 22 * * *'
   workflow_dispatch:
     inputs:
       skip_send:
