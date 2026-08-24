@@ -1,4 +1,17 @@
-"""Call Claude Sonnet 4.6 to filter / translate / classify / summarize raw items."""
+"""Filter / translate / classify / summarize raw items with an LLM.
+
+Talks to the relay over the OpenAI-compatible `/v1/chat/completions` endpoint via
+plain HTTP + SSE streaming, rather than through a vendor SDK. Two reasons, both
+found the hard way:
+
+  * Protocol reach — the relay only exposes Anthropic's `/v1/messages` for paid
+    models. Free variants (kimi-k3-free, glm-*-free) are chat/completions-only,
+    so an Anthropic SDK simply cannot address them.
+  * The 120s wall — the relay sits behind Cloudflare, which aborts any request
+    whose origin stays silent for 120s (error 524). Free-tier models need 4-5
+    minutes for this job. Streaming keeps bytes flowing, so the gateway never
+    fires; a non-streamed call is guaranteed to fail.
+"""
 from __future__ import annotations
 
 import argparse
@@ -9,12 +22,20 @@ import sys
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
-import anthropic
+import requests
 
 
-MODEL = "claude-sonnet-4-6"
+# Overridable so the model can be swapped without touching CI: `ANALYZE_MODEL=...`.
+MODEL = os.environ.get("ANALYZE_MODEL", "moonshotai/kimi-k3-free")
 SECTIONS = ["frontier", "breaking", "oversea", "cn", "trending"]
 FIELD_SEP = "|||"
+MAX_TOKENS = 12000
+# Degraded-mode cap per section, matching lark_card.VISIBLE so a fallback
+# digest fills the card's inline slots without spilling into the fold.
+FALLBACK_PER_SECTION = 5
+# Per-attempt read budget. Kept well under the CI job timeout so that two
+# attempts plus fetch/send still fit inside it.
+READ_TIMEOUT = 600
 
 
 def _today_cst_date() -> str:
@@ -64,12 +85,20 @@ def _parse_digest(text: str) -> dict:
 
 
 def _fallback_digest(raw: dict, reason: str) -> dict:
-    """If LLM call fails, ship a degraded digest with raw titles grouped by section_hint."""
+    """If LLM call fails, ship a degraded digest with raw titles grouped by section_hint.
+
+    Capped *per section*, not globally: raw.json is ordered by whichever source's
+    concurrent fetch finished first, so an earlier global items[:20] slice could
+    drop whole sections — frontier and trending came back empty whenever the
+    Chinese media feeds (which carry the most items) happened to land first.
+    """
     buckets: dict[str, list] = {s: [] for s in SECTIONS}
-    for it in raw.get("items", [])[:20]:
+    for it in raw.get("items", []):
         hint = it.get("section_hint") or "cn"
         if hint not in buckets:
             hint = "cn"
+        if len(buckets[hint]) >= FALLBACK_PER_SECTION:
+            continue
         buckets[hint].append({
             "title": it.get("title", ""),
             "summary": (it.get("summary", "") or "")[:120],
@@ -81,6 +110,59 @@ def _fallback_digest(raw: dict, reason: str) -> dict:
         "sections": buckets,
         "_degraded": reason,
     }
+
+
+def _stream_chat(base_url: str, api_key: str, system_prompt: str, user_content: str) -> str:
+    """POST one streamed chat completion and return the assistant's text.
+
+    Reasoning models emit their chain of thought in `delta.reasoning_content`,
+    which is 3-4x the size of the answer here and must not reach the parser —
+    only `delta.content` is collected.
+    """
+    resp = requests.post(
+        base_url.rstrip("/") + "/v1/chat/completions",
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "content-type": "application/json",
+            "accept": "text/event-stream",
+        },
+        json={
+            "model": MODEL,
+            "max_tokens": MAX_TOKENS,
+            "stream": True,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_content},
+            ],
+        },
+        stream=True,
+        timeout=(20, READ_TIMEOUT),
+    )
+    if resp.status_code != 200:
+        raise RuntimeError(f"HTTP {resp.status_code}: {resp.text[:300]}")
+
+    chunks: list[str] = []
+    # Decode the SSE bytes ourselves: requests' decode_unicode=True falls back to
+    # the HTTP default of ISO-8859-1 when the response carries no charset, which
+    # mangles every CJK character in the digest.
+    for raw in resp.iter_lines(decode_unicode=False):
+        if not raw:
+            continue
+        line = raw.decode("utf-8", errors="replace")
+        if not line.startswith("data:"):
+            continue
+        payload = line[5:].strip()
+        if payload == "[DONE]":
+            break
+        try:
+            event = json.loads(payload)
+        except json.JSONDecodeError:
+            continue        # keep-alive or partial frame
+        delta = ((event.get("choices") or [{}])[0]).get("delta") or {}
+        piece = delta.get("content")
+        if piece:
+            chunks.append(piece)
+    return "".join(chunks)
 
 
 def main() -> int:
@@ -129,28 +211,20 @@ def main() -> int:
         f"{json.dumps(compact, ensure_ascii=False)}"
     )
 
-    client_kwargs = {"api_key": os.environ.get("ANTHROPIC_API_KEY")}
-    base_url = os.environ.get("ANTHROPIC_BASE_URL")
-    if base_url:
-        client_kwargs["base_url"] = base_url
-        print(f"[analyze] using base_url={base_url}", file=sys.stderr)
-    client = anthropic.Anthropic(**client_kwargs)
+    api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+    base_url = os.environ.get("ANTHROPIC_BASE_URL", "")
+    if not base_url:
+        # The chat/completions shape is the relay's, not the vendor's official API.
+        print("[analyze] ANTHROPIC_BASE_URL is required (relay endpoint)", file=sys.stderr)
+        return 2
+    print(f"[analyze] using base_url={base_url}", file=sys.stderr)
 
     digest: dict | None = None
     last_err: Exception | None = None
     for attempt in range(2):
         try:
-            resp = client.messages.create(
-                model=MODEL,
-                max_tokens=12000,
-                system=[{
-                    "type": "text",
-                    "text": system_prompt,
-                    "cache_control": {"type": "ephemeral"},
-                }],
-                messages=[{"role": "user", "content": user_content}],
-            )
-            text = "".join(b.text for b in resp.content if getattr(b, "type", "") == "text")
+            text = _stream_chat(base_url, api_key, system_prompt, user_content)
+            print(f"[analyze] attempt {attempt + 1}: {len(text)} chars streamed", file=sys.stderr)
             digest = _parse_digest(text)
             break
         except Exception as e:

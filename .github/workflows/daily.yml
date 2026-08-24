@@ -18,7 +18,8 @@ permissions:
 jobs:
   daily:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    # analyze 单次读超时 600s x 2 次重试 = 最坏 20min，加 fetch/send/pip 留余量。
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
 

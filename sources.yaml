@@ -81,6 +81,15 @@ sources:
     url: https://github.blog/category/ai-and-ml/feed/
     section_hint: frontier
 
+  # === 一手发布信号（GitHub Releases）===
+  # releases.atom 是标准 Atom，直接走 rss parser；entry title 只有裸版本号
+  # （"v0.1.1-rc.2"），故用 title_prefix 补上项目名。要盯别的项目照抄一条即可。
+  - name: DeepSeek Harness Releases
+    type: rss
+    url: https://github.com/deepseek-ai/deepseek-harness/releases.atom
+    title_prefix: "DeepSeek Harness "
+    section_hint: frontier
+
   # === 社区热度 ===
   - name: GitHub Trending Daily
     type: html
@@ -94,3 +103,10 @@ sources:
     base_url: https://github.com
     section_hint: trending
     assume_fresh: true        # trending=today; no per-repo date, but inherently current
+
+  - name: Hacker News 高热
+    type: hn_algolia
+    # search_by_date = 时间倒序，配合 window_hours 只留今日；points>100 滤掉噪音
+    # （实测 24h 内约 26 条，其中 AI 相关 7 条；阈值降到 30 则噪音显著上升）
+    url: https://hn.algolia.com/api/v1/search_by_date?tags=story&numericFilters=points%3E100&hitsPerPage=30
+    section_hint: oversea

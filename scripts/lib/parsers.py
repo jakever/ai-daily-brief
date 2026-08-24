@@ -75,6 +75,9 @@ def parse_rss(src: dict, sess) -> list[Item]:
     # feedparser handles fetch + parse, but routing through our session lets us reuse UA.
     resp = get(sess, src["url"], timeout=20)
     feed = feedparser.parse(resp.content)
+    # Some feeds carry no context in the title (GitHub releases.atom titles are bare
+    # version strings like "v0.1.1-rc.2"); `title_prefix` restores it.
+    prefix = src.get("title_prefix", "")
     out: list[Item] = []
     for entry in feed.entries:
         published = (
@@ -82,9 +85,10 @@ def parse_rss(src: dict, sess) -> list[Item]:
             or _to_iso(getattr(entry, "updated_parsed", None))
             or _to_iso(getattr(entry, "published", ""))
         )
+        title = _strip_html(getattr(entry, "title", "")).strip()
         out.append(Item(
             source=src["name"],
-            title=_strip_html(getattr(entry, "title", "")).strip(),
+            title=f"{prefix}{title}" if prefix and title else title,
             url=getattr(entry, "link", "").strip(),
             summary=_strip_html(getattr(entry, "summary", ""))[:400],
             published_at=published,

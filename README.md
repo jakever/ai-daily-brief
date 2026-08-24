@@ -1,13 +1,13 @@
 # AI Daily Brief
 
-每天早晨自动聚合 11 个 AI 信息源，调用 Claude Sonnet 4.6 翻译、过滤、分类、摘要，以飞书 interactive 卡片（schema 2.0，支持版块折叠展开）推送到指定群。
+每天早晨自动聚合 13 个 AI 信息源，调用 LLM（默认 `moonshotai/kimi-k3-free`，可用 `ANALYZE_MODEL` 覆盖）翻译、过滤、分类、摘要，以飞书 interactive 卡片（schema 2.0，支持版块折叠展开）推送到指定群。
 
 ## 架构
 
 ```
 GitHub Actions (cron 37 22 * * * UTC ≈ 次日 06:37 CST)
   → fetch_sources.py  抓 11 源 → raw.json
-  → analyze.py        Claude Sonnet 4.6 → digest.json
+  → analyze.py        LLM（HTTP + SSE 流式）→ digest.json
   → send_lark.py      飞书 webhook
 ```
 
@@ -40,8 +40,9 @@ GitHub Actions (cron 37 22 * * * UTC ≈ 次日 06:37 CST)
 
 仓库 Settings → Secrets and variables → Actions：
 
-- `ANTHROPIC_API_KEY` — Claude API Key（或中转平台 Key）
-- `ANTHROPIC_BASE_URL` — 中转平台 endpoint（用官方 API 则留空）
+- `ANTHROPIC_API_KEY` — 中转平台 Key
+- `ANTHROPIC_BASE_URL` — 中转平台 endpoint（**必填**：analyze 走 OpenAI 兼容的 `/v1/chat/completions`，非厂商官方 API）
+- `ANALYZE_MODEL` — 可选，覆盖默认模型
 - `LARK_WEBHOOK_URL` — 飞书群机器人 webhook URL
 
 ### 2. 本地调试
