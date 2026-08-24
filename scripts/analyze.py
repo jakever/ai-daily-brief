@@ -26,10 +26,15 @@ import requests
 
 
 # Overridable so the model can be swapped without touching CI: `ANALYZE_MODEL=...`.
-MODEL = os.environ.get("ANALYZE_MODEL", "moonshotai/kimi-k3-free")
+# moonshotai/kimi-k3-free is NOT a valid choice here: it rejects every streamed
+# request with `openai_error` (works non-streamed, but streaming is mandatory —
+# see the 120s note above). glm-5.3-free / deepseek-v4-pro-free also stream fine
+# but are slower.
+MODEL = os.environ.get("ANALYZE_MODEL", "qwen/qwen3.8-max-free")
 SECTIONS = ["frontier", "breaking", "oversea", "cn", "trending"]
 FIELD_SEP = "|||"
 MAX_TOKENS = 12000
+TOP_P = 0.95
 # Degraded-mode cap per section, matching lark_card.VISIBLE so a fallback
 # digest fills the card's inline slots without spilling into the fold.
 FALLBACK_PER_SECTION = 5
@@ -130,6 +135,11 @@ def _stream_chat(base_url: str, api_key: str, system_prompt: str, user_content: 
             "model": MODEL,
             "max_tokens": MAX_TOKENS,
             "stream": True,
+            # Sent explicitly on purpose: left absent, the relay injects
+            # top_p=0.001, which some upstreams reject outright. It also
+            # rewrites 1 -> 0.999 (likewise rejected), so pick a value it
+            # passes through untouched.
+            "top_p": TOP_P,
             "messages": [
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_content},

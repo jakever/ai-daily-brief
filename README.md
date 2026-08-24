@@ -1,6 +1,6 @@
 # AI Daily Brief
 
-每天早晨自动聚合 13 个 AI 信息源，调用 LLM（默认 `moonshotai/kimi-k3-free`，可用 `ANALYZE_MODEL` 覆盖）翻译、过滤、分类、摘要，以飞书 interactive 卡片（schema 2.0，支持版块折叠展开）推送到指定群。
+每天早晨自动聚合 13 个 AI 信息源，调用 LLM（默认 `qwen/qwen3.8-max-free`，可用 `ANALYZE_MODEL` 覆盖）翻译、过滤、分类、摘要，以飞书 interactive 卡片（schema 2.0，支持版块折叠展开）推送到指定群。
 
 ## 架构
 
